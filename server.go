@@ -60,19 +60,11 @@ func (server *Server) GetGRPC() *grpc.Server {
 //   - Starts the gRPC server
 //   - Closes the listener when the context is done
 //   - Returns nil on normal shutdown, error on failure
-func (server *Server) Process(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
+func (server *Server) Process(_ context.Context) error {
 	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", server.config.Interface, server.config.Port))
 	if err != nil {
 		return err
 	}
-
-	go func() {
-		<-ctx.Done()
-		_ = listener.Close()
-	}()
 
 	return server.grpcServer.Serve(listener)
 }
@@ -83,4 +75,8 @@ func (server *Server) Process(ctx context.Context) error {
 func (server *Server) Close() error {
 	server.grpcServer.GracefulStop()
 	return nil
+}
+
+func (server *Server) Name() string {
+	return "server.grpc"
 }

@@ -59,7 +59,7 @@ var Component = &component.Component{
 	}),
 	Execute: component.StepFunc(func(container container.Container) error {
 		return container.Invoke(func(r runner.Runner, server *Server) error {
-			return r.RunTask(runner.NewTask("server.grpc", server))
+			return r.RunProcess(server)
 		})
 	}),
 	Stop: component.StepFunc(func(container container.Container) error {
