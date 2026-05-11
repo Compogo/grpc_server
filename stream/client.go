@@ -11,19 +11,21 @@ import (
 	"google.golang.org/grpc"
 )
 
-type ClientServerStreaming[Res any] struct {
-	grpcClient grpc.ServerStreamingServer[Res]
-	msgChan    chan *Res
+type ReqCallback[Req any] func(ctx context.Context, req *Req) error
+
+type ClientServerStreamingServer[Res any] struct {
+	stream  grpc.ServerStreamingServer[Res]
+	msgChan chan *Res
 }
 
-func NewClientServerStreaming[Res any](grpcClient grpc.ServerStreamingServer[Res], bufferSize uint32) *ClientServerStreaming[Res] {
-	return &ClientServerStreaming[Res]{
-		grpcClient: grpcClient,
-		msgChan:    make(chan *Res, bufferSize),
+func NewClientServerStreamingServer[Res any](stream grpc.ServerStreamingServer[Res], bufferSize uint32) *ClientServerStreamingServer[Res] {
+	return &ClientServerStreamingServer[Res]{
+		stream:  stream,
+		msgChan: make(chan *Res, bufferSize),
 	}
 }
 
-func (client *ClientServerStreaming[Res]) Send(message *Res) error {
+func (client *ClientServerStreamingServer[Res]) Send(message *Res) error {
 	select {
 	case client.msgChan <- message:
 		return nil
@@ -32,7 +34,7 @@ func (client *ClientServerStreaming[Res]) Send(message *Res) error {
 	}
 }
 
-func (client *ClientServerStreaming[Res]) Process(ctx context.Context) error {
+func (client *ClientServerStreamingServer[Res]) Process(ctx context.Context) error {
 	ctx, cancelFunc := context.WithCancel(ctx)
 	defer cancelFunc()
 
@@ -42,21 +44,67 @@ func (client *ClientServerStreaming[Res]) Process(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-client.grpcClient.Context().Done():
+		case <-client.stream.Context().Done():
 			return nil
 		case msg, ok := <-client.msgChan:
 			if !ok {
 				return MessageChanClosedError
 			}
 
-			if err := client.grpcClient.Send(msg); err != nil {
+			if err := client.stream.Send(msg); err != nil {
 				return fmt.Errorf("message %+v; %w, %w", msg, SendMessageError, err)
 			}
 		}
 	}
 }
 
-type ReqCallback[Req any] func(ctx context.Context, req *Req) error
+type ClientServerStreamingClient[Res any] struct {
+	stream      grpc.ServerStreamingClient[Res]
+	reqCallback ReqCallback[Res]
+
+	logger logger.Logger
+}
+
+func NewClientServerStreamingClient[Res any](
+	stream grpc.ServerStreamingClient[Res],
+	reqCallback ReqCallback[Res],
+	logger logger.Logger,
+) *ClientServerStreamingClient[Res] {
+	return &ClientServerStreamingClient[Res]{
+		stream:      stream,
+		reqCallback: reqCallback,
+		logger:      logger,
+	}
+}
+
+func (client *ClientServerStreamingClient[Res]) Process(ctx context.Context) error {
+	ctx, cancelFunc := context.WithCancel(ctx)
+	defer cancelFunc()
+
+	for {
+		req, err := client.stream.Recv()
+		if err != nil && errors.Is(err, io.EOF) {
+			return nil
+		}
+
+		if err != nil {
+			return err
+		}
+
+		if err = client.reqCallback(ctx, req); err != nil {
+			client.logger.Error(err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-client.stream.Context().Done():
+			return nil
+		default:
+			continue
+		}
+	}
+}
 
 type ClientBidiStreamingServer[Req any, Res any] struct {
 	stream      grpc.BidiStreamingServer[Req, Res]
@@ -119,6 +167,9 @@ func (client *ClientBidiStreamingServer[Req, Res]) Process(ctx context.Context) 
 			select {
 			case <-recvCtx.Done():
 				return
+			case <-client.stream.Context().Done():
+				mainCancelFunc()
+				return
 			default:
 				continue
 			}
@@ -144,6 +195,9 @@ func (client *ClientBidiStreamingServer[Req, Res]) Process(ctx context.Context) 
 					return
 				}
 			case <-sendCtx.Done():
+				return
+			case <-client.stream.Context().Done():
+				mainCancelFunc()
 				return
 			}
 		}
