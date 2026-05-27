@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 
 	"github.com/Compogo/compogo/logger"
 	"google.golang.org/grpc"
@@ -141,9 +140,10 @@ func (client *ClientBidiStreamingServer[Req, Res]) Process(ctx context.Context) 
 	mainCtx, mainCancelFunc := context.WithCancel(ctx)
 	defer mainCancelFunc()
 
-	wg := &sync.WaitGroup{}
+	chanErr := make(chan error, 1)
+	defer close(chanErr)
 
-	wg.Go(func() {
+	go func(ctx context.Context) {
 		recvCtx, recvCancelFunc := context.WithCancel(mainCtx)
 		defer recvCancelFunc()
 
@@ -156,12 +156,23 @@ func (client *ClientBidiStreamingServer[Req, Res]) Process(ctx context.Context) 
 
 			if err != nil {
 				client.logger.Error(err)
+				select {
+				case chanErr <- err:
+				default:
+					break
+				}
+
 				mainCancelFunc()
 				return
 			}
 
 			if err = client.reqCallback(recvCtx, req); err != nil {
 				client.logger.Error(err)
+				select {
+				case chanErr <- err:
+				default:
+					break
+				}
 			}
 
 			select {
@@ -174,9 +185,9 @@ func (client *ClientBidiStreamingServer[Req, Res]) Process(ctx context.Context) 
 				continue
 			}
 		}
-	})
+	}(mainCtx)
 
-	wg.Go(func() {
+	go func(ctx context.Context) {
 		sendCtx, sendCancelFunc := context.WithCancel(mainCtx)
 		defer sendCancelFunc()
 
@@ -191,6 +202,12 @@ func (client *ClientBidiStreamingServer[Req, Res]) Process(ctx context.Context) 
 
 				if err != nil {
 					client.logger.Error(err)
+					select {
+					case chanErr <- err:
+					default:
+						break
+					}
+
 					mainCancelFunc()
 					return
 				}
@@ -201,8 +218,16 @@ func (client *ClientBidiStreamingServer[Req, Res]) Process(ctx context.Context) 
 				return
 			}
 		}
-	})
+	}(mainCtx)
 
-	wg.Wait()
-	return nil
+	select {
+	case <-mainCtx.Done():
+		return nil
+	case err, ok := <-chanErr:
+		if !ok {
+			return nil
+		}
+
+		return err
+	}
 }
