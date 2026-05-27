@@ -105,8 +105,14 @@ func (client *ClientServerStreamingClient[Res]) Process(ctx context.Context) err
 	}
 }
 
+type BidiStreaming[Req any, Res any] interface {
+	Recv() (*Req, error)
+	Send(*Res) error
+	Context() context.Context
+}
+
 type ClientBidiStreamingServer[Req any, Res any] struct {
-	stream      grpc.BidiStreamingServer[Req, Res]
+	stream      BidiStreaming[Req, Res]
 	msgChan     chan *Res
 	reqCallback ReqCallback[Req]
 
@@ -114,7 +120,7 @@ type ClientBidiStreamingServer[Req any, Res any] struct {
 }
 
 func NewClientBidiStreamingServer[Req any, Res any](
-	stream grpc.BidiStreamingServer[Req, Res],
+	stream BidiStreaming[Req, Res],
 	reqCallback ReqCallback[Req],
 	logger logger.Logger,
 	bufferSize uint32,
