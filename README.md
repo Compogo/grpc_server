@@ -1,4 +1,4 @@
-# Compogo gRPC
+# Compogo gRPC Server
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/Compogo/grpc_server.svg)](https://pkg.go.dev/github.com/Compogo/grpc_server)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
