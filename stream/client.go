@@ -6,17 +6,23 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/Compogo/compogo/logger"
+	"github.com/Compogo/compogo"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
+// ReqCallback — функция обратного вызова для обработки входящих сообщений.
 type ReqCallback[Req any] func(ctx context.Context, req *Req) error
 
+// ClientServerStreamingServer — серверный стрим для отправки сообщений клиенту.
+// Использует буферизированный канал для асинхронной отправки.
 type ClientServerStreamingServer[Res any] struct {
 	stream  grpc.ServerStreamingServer[Res]
 	msgChan chan *Res
 }
 
+// NewClientServerStreamingServer создаёт новый серверный стрим.
 func NewClientServerStreamingServer[Res any](stream grpc.ServerStreamingServer[Res], bufferSize uint32) *ClientServerStreamingServer[Res] {
 	return &ClientServerStreamingServer[Res]{
 		stream:  stream,
@@ -24,6 +30,7 @@ func NewClientServerStreamingServer[Res any](stream grpc.ServerStreamingServer[R
 	}
 }
 
+// Send отправляет сообщение клиенту.
 func (client *ClientServerStreamingServer[Res]) Send(message *Res) error {
 	select {
 	case client.msgChan <- message:
@@ -33,11 +40,10 @@ func (client *ClientServerStreamingServer[Res]) Send(message *Res) error {
 	}
 }
 
+// Process обрабатывает отправку сообщений.
 func (client *ClientServerStreamingServer[Res]) Process(ctx context.Context) error {
 	ctx, cancelFunc := context.WithCancel(ctx)
 	defer cancelFunc()
-
-	defer close(client.msgChan)
 
 	for {
 		select {
@@ -57,17 +63,19 @@ func (client *ClientServerStreamingServer[Res]) Process(ctx context.Context) err
 	}
 }
 
+// ClientServerStreamingClient — клиентский стрим для получения сообщений от сервера.
 type ClientServerStreamingClient[Res any] struct {
 	stream      grpc.ServerStreamingClient[Res]
 	reqCallback ReqCallback[Res]
 
-	logger logger.Logger
+	logger compogo.Logger
 }
 
+// NewClientServerStreamingClient создаёт новый клиентский стрим.
 func NewClientServerStreamingClient[Res any](
 	stream grpc.ServerStreamingClient[Res],
 	reqCallback ReqCallback[Res],
-	logger logger.Logger,
+	logger compogo.Logger,
 ) *ClientServerStreamingClient[Res] {
 	return &ClientServerStreamingClient[Res]{
 		stream:      stream,
@@ -76,6 +84,7 @@ func NewClientServerStreamingClient[Res any](
 	}
 }
 
+// Process обрабатывает получение сообщений.
 func (client *ClientServerStreamingClient[Res]) Process(ctx context.Context) error {
 	ctx, cancelFunc := context.WithCancel(ctx)
 	defer cancelFunc()
@@ -105,24 +114,27 @@ func (client *ClientServerStreamingClient[Res]) Process(ctx context.Context) err
 	}
 }
 
+// BidiStreaming — интерфейс для двунаправленного стрима.
 type BidiStreaming[Req any, Res any] interface {
 	Recv() (*Req, error)
 	Send(*Res) error
 	Context() context.Context
 }
 
+// ClientBidiStreamingServer — двунаправленный стрим.
 type ClientBidiStreamingServer[Req any, Res any] struct {
 	stream      BidiStreaming[Req, Res]
 	msgChan     chan *Res
 	reqCallback ReqCallback[Req]
 
-	logger logger.Logger
+	logger compogo.Logger
 }
 
+// NewClientBidiStreamingServer создаёт новый двунаправленный стрим.
 func NewClientBidiStreamingServer[Req any, Res any](
 	stream BidiStreaming[Req, Res],
 	reqCallback ReqCallback[Req],
-	logger logger.Logger,
+	logger compogo.Logger,
 	bufferSize uint32,
 ) *ClientBidiStreamingServer[Req, Res] {
 	return &ClientBidiStreamingServer[Req, Res]{
@@ -133,6 +145,7 @@ func NewClientBidiStreamingServer[Req any, Res any](
 	}
 }
 
+// Send отправляет сообщение.
 func (client *ClientBidiStreamingServer[Req, Res]) Send(message *Res) error {
 	select {
 	case client.msgChan <- message:
@@ -142,98 +155,65 @@ func (client *ClientBidiStreamingServer[Req, Res]) Send(message *Res) error {
 	}
 }
 
+// Process обрабатывает двунаправленный стрим.
 func (client *ClientBidiStreamingServer[Req, Res]) Process(ctx context.Context) error {
-	mainCtx, mainCancelFunc := context.WithCancel(ctx)
-	defer mainCancelFunc()
+	ctx, cancelFunc := context.WithCancel(ctx)
+	defer cancelFunc()
 
 	chanErr := make(chan error, 1)
-	defer close(chanErr)
-
-	go func(ctx context.Context) {
-		recvCtx, recvCancelFunc := context.WithCancel(mainCtx)
+	go func() {
+		defer cancelFunc()
+		recvCtx, recvCancelFunc := context.WithCancel(ctx)
 		defer recvCancelFunc()
+		defer close(chanErr)
 
 		for {
 			req, err := client.stream.Recv()
-			if err != nil && errors.Is(err, io.EOF) {
-				mainCancelFunc()
-				return
-			}
-
-			if err != nil {
-				client.logger.Error(err)
-				select {
-				case chanErr <- err:
-				default:
-					break
-				}
-
-				mainCancelFunc()
+			if err = CheckError(err); err != nil {
+				chanErr <- err
 				return
 			}
 
 			if err = client.reqCallback(recvCtx, req); err != nil {
-				client.logger.Error(err)
-				select {
-				case chanErr <- err:
-				default:
-					break
-				}
+				chanErr <- err
+				return
 			}
 
 			select {
 			case <-recvCtx.Done():
 				return
-			case <-client.stream.Context().Done():
-				mainCancelFunc()
-				return
 			default:
 				continue
 			}
 		}
-	}(mainCtx)
+	}()
 
-	go func(ctx context.Context) {
-		sendCtx, sendCancelFunc := context.WithCancel(mainCtx)
-		defer sendCancelFunc()
-
-		for {
-			select {
-			case m := <-client.msgChan:
-				err := client.stream.Send(m)
-				if err != nil && errors.Is(err, io.EOF) {
-					mainCancelFunc()
-					return
-				}
-
-				if err != nil {
-					client.logger.Error(err)
-					select {
-					case chanErr <- err:
-					default:
-						break
-					}
-
-					mainCancelFunc()
-					return
-				}
-			case <-sendCtx.Done():
-				return
-			case <-client.stream.Context().Done():
-				mainCancelFunc()
-				return
+	for {
+		select {
+		case err, ok := <-chanErr:
+			if !ok {
+				return nil
 			}
-		}
-	}(mainCtx)
 
-	select {
-	case <-mainCtx.Done():
-		return nil
-	case err, ok := <-chanErr:
-		if !ok {
+			return err
+		case m := <-client.msgChan:
+			if err := CheckError(client.stream.Send(m)); err != nil {
+				return err
+			}
+		case <-client.stream.Context().Done():
+			return CheckError(client.stream.Context().Err())
+		case <-ctx.Done():
 			return nil
 		}
-
-		return err
 	}
+}
+
+// CheckError проверяет, является ли ошибка результатом отмены контекста.
+func CheckError(err error) error {
+	st, ok := status.FromError(err)
+	if (ok && st.Code() == codes.Canceled) || errors.Is(err, context.Canceled) {
+		return nil
+	}
+
+	return err
 }

@@ -1,49 +1,32 @@
-package grpc
+package grpc_server
 
 import (
-	"github.com/Compogo/compogo/component"
-	"github.com/Compogo/compogo/container"
+	"github.com/Compogo/compogo"
 	"github.com/Compogo/compogo/flag"
 	"github.com/Compogo/runner"
 )
 
-// Component is a ready-to-use Compogo component that provides a gRPC server.
-// It automatically:
-//   - Registers Config and Server in the DI container
-//   - Adds command-line flags for server configuration
-//   - Configures the server during Configuration phase
-//   - Starts the server as a runner task during Execute phase
-//   - Performs graceful shutdown during Stop phase
+// Component — компонент GRPC-сервера для Compogo.
+// Регистрирует сервер в DI-контейнере и запускает его через Runner.
 //
-// Usage:
+// Пример:
 //
-//	compogo.WithComponents(
-//	    runner.Component,
-//	    grpc.Component,
-//	    // ... your service components
-//	)
+//	app.AddComponents(&grpc_server.Component)
 //
-// Service registration should happen in PreExecute phase:
-//
-//	var userServiceComponent = &component.Component{
-//	    Dependencies: []*component.Component{grpc.Component},
-//	    PreExecute: component.StepFunc(func(c container.Container) error {
-//	        return c.Invoke(func(server *grpc.Server, svc *UserService) {
-//	            pb.RegisterUserServiceServer(server.GetGRPC(), svc)
-//	        })
-//	    }),
-//	}
-var Component = &component.Component{
-	Dependencies: component.Components{
-		runner.Component,
+//	var s *grpc_server.Server
+//	container.Invoke(func(server *grpc_server.Server) { s = server })
+//	service.RegisterMyServiceServer(s.GetGRPC(), &MyService{})
+var Component = compogo.Component{
+	Dependencies: compogo.Components{
+		&runner.Component,
 	},
-	Init: component.StepFunc(func(container container.Container) error {
+	Init: compogo.StepFunc(func(container compogo.Container) error {
 		return container.Provides(
 			NewConfig,
 			NewServer,
 		)
 	}),
-	BindFlags: component.BindFlags(func(flagSet flag.FlagSet, container container.Container) error {
+	BindFlags: compogo.BindFlags(func(flagSet flag.FlagSet, container compogo.Container) error {
 		return container.Invoke(func(config *Config) {
 			flagSet.BoolVar(&config.PermitWithoutStream, PermitWithoutStreamFieldName, PermitWithoutStreamDefault, "")
 			flagSet.Uint16Var(&config.Port, PortFieldName, PortDefault, "")
@@ -54,15 +37,15 @@ var Component = &component.Component{
 			flagSet.DurationVar(&config.KeepaliveTimeout, KeepaliveTimeoutFieldName, KeepaliveTimeoutDefault, "")
 		})
 	}),
-	Configuration: component.StepFunc(func(container container.Container) error {
+	Configuration: compogo.StepFunc(func(container compogo.Container) error {
 		return container.Invoke(Configuration)
 	}),
-	Execute: component.StepFunc(func(container container.Container) error {
+	Execute: compogo.StepFunc(func(container compogo.Container) error {
 		return container.Invoke(func(r runner.Runner, server *Server) error {
 			return r.RunProcess(server)
 		})
 	}),
-	Stop: component.StepFunc(func(container container.Container) error {
+	Stop: compogo.StepFunc(func(container compogo.Container) error {
 		return container.Invoke(func(server *Server) error {
 			return server.Close()
 		})

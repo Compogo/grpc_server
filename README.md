@@ -1,113 +1,190 @@
-# Compogo gRPC 🔌
+# Compogo gRPC
 
-**Compogo gRPC** — это production-ready gRPC-сервер для Compogo, построенный поверх стандартной библиотеки `google.golang.org/grpc`. Полностью интегрируется с жизненным циклом Compogo, поддерживает тонкую настройку через флаги и graceful shutdown из коробки.
+[![Go Reference](https://pkg.go.dev/badge/github.com/Compogo/grpc_server.svg)](https://pkg.go.dev/github.com/Compogo/grpc_server)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## 🚀 Установка
+GRPC-сервер и утилиты для работы со стримами в фреймворке [Compogo](https://github.com/Compogo/compogo).
 
-```bash
-go get github.com/Compogo/grpc
+Предоставляет:
+
+* GRPC-сервер с настройками keepalive
+* Интеграцию с Runner для управления жизненным циклом
+* Утилиты для работы с серверными, клиентскими и двунаправленными стримами
+
+## Установка
+
+```shell
+go get github.com/Compogo/grpc_server
 ```
 
-### 📦 Быстрый старт
+## Быстрый старт
 
 ```go
 package main
 
 import (
     "github.com/Compogo/compogo"
-    "github.com/Compogo/runner"
-    "github.com/Compogo/grpc"
+    "github.com/Compogo/grpc_server"
 )
 
 func main() {
     app := compogo.NewApp("myapp",
-        compogo.WithOsSignalCloser(),
-        runner.WithRunner(),
-        grpc.Component,  // добавляем gRPC-сервер
-        compogo.WithComponents(
-            userServiceComponent,
-        ),
+        compogo.WithComponents(&grpc_server.Component),
     )
+
+    app.AddComponents(&compogo.Component{
+        Name: "my_service",
+        Init: compogo.StepFunc(func(container compogo.Container) error {
+            return container.Invoke(func(server *grpc_server.Server) error {
+                // Регистрация вашего GRPC-сервиса
+                service.RegisterMyServiceServer(server.GetGRPC(), &MyService{})
+                return nil
+            })
+        }),
+    })
 
     if err := app.Serve(); err != nil {
         panic(err)
     }
 }
+```
 
-// Компонент с бизнес-логикой
-var userServiceComponent = &component.Component{
-    Dependencies: component.Components{grpc.Component},
-    Init: component.StepFunc(func(c container.Container) error {
-        return c.Provide(NewUserService)
-    }),
-    PreExecute: component.StepFunc(func(c container.Container) error {
-        return c.Invoke(func(server *grpc.Server, svc *UserService) {
-            // Регистрируем сервис ДО запуска сервера
-            pb.RegisterUserServiceServer(server.GetGRPC(), svc)
-        })
-    }),
+## Конфигурация
+
+### Флаги командной строки
+
+```shell
+# Сетевой интерфейс
+--server.grpc.interface=0.0.0.0
+
+# Порт
+--server.grpc.port=9090
+
+# Максимальное количество одновременных стримов
+--server.grpc.max_concurrent_streams=1000
+
+# Keepalive настройки
+--server.grpc.min_time=1s
+--server.grpc.keepalive.time=10s
+--server.grpc.keepalive.timeout=20s
+--server.grpc.permit_without_stream=true
+```
+
+## Использование
+
+### Серверный стрим (Server Streaming)
+
+Отправка сообщений клиенту:
+
+```go
+type MyService struct {
+    service.UnimplementedMyServiceServer
+}
+
+func (s *MyService) Subscribe(req *emptypb.Empty, stream grpc.ServerStreamingServer[MyResponse]) error {
+    client := stream.NewClientServerStreamingServer[MyResponse](stream, 10)
+
+    // Отправка сообщений
+    for i := 0; i < 10; i++ {
+        if err := client.Send(&MyResponse{Data: "message"}); err != nil {
+            return err
+        }
+    }
+
+    return client.Process(ctx)
 }
 ```
 
-### ✨ Возможности
+### Клиентский стрим (Client Streaming)
 
-#### 🎯 Production-ready конфигурация
-
-Сервер настраивается через флаги — всё, что нужно для продакшена:
-
-```bash
-./myapp \
-    --server.grpc.interface=0.0.0.0 \
-    --server.grpc.port=9090 \
-    --server.grpc.max_concurrent_streams=1000 \
-    --server.grpc.min_time=1s \
-    --server.grpc.permit_without_stream=true \
-    --server.grpc.keepalive.time=10s \
-    --server.grpc.keepalive.timeout=20s
-```
-
-#### 🔄 Жизненный цикл
-
-```plantuml
-Init         → создаём конфиг и сервер
-BindFlags    → добавляем флаги
-Configuration→ применяем конфиг
-PreExecute   → РЕГИСТРИРУЕМ СЕРВИСЫ (важно!)
-Execute      → запускаем сервер через Runner
-Stop         → graceful shutdown (GracefulStop)
-```
-
-**Критический** момент: сервисы должны регистрироваться в `PreExecute` — ДО того, как сервер запустится в `Execute`.
-
-### 🔌 Доступ к чистому grpc.Server
+Получение сообщений от сервера:
 
 ```go
-server.GetGRPC()  // для регистрации сервисов
-```
+func (s *MyService) Subscribe(ctx context.Context, callback func(ctx context.Context, *MyResponse) error) error {
+    stream, err := s.client.Subscribe(ctx, &emptypb.Empty{})
+    if err != nil {
+        return err
+    }
 
-#### 🧩 Пример с несколькими сервисами
+    client := stream.NewClientServerStreamingClient[MyResponse](stream, callback, logger)
 
-```go
-var GrpcServicesComponent = &component.Component{
-    Dependencies: component.Components{grpc.Component},
-    Init: component.StepFunc(func(c container.Container) error {
-        return c.Provides(
-            NewUserService,
-            NewOrderService,
-            NewProductService,
-        )
-    }),
-    PreExecute: component.StepFunc(func(c container.Container) error {
-        return c.Invoke(func(
-            server *grpc.Server,
-            users *UserService,
-            orders *OrderService,
-            products *ProductService,
-        ) {
-            pb.RegisterUserServiceServer(server.GetGRPC(), users)
-            pb.RegisterOrderServiceServer(server.GetGRPC(), orders)
-            pb.RegisterProductServiceServer(server.GetGRPC(), products)
-        })
-    }),
+    return client.Process(ctx)
 }
+```
+
+### Двунаправленный стрим (Bidirectional Streaming)
+
+Одновременная отправка и получение сообщений:
+
+```go
+// На сервере
+func (s *MyService) Chat(stream grpc.BidiStreamingServer[ChatRequest, ChatResponse]) error {
+    server := stream.NewClientBidiStreamingServer[ChatRequest, ChatResponse](
+        stream,
+        func(ctx context.Context, req *ChatRequest) error {
+            // Обработка входящих сообщений
+            return nil
+        },
+        logger,
+        10,
+    )
+
+    // Отправка сообщений
+    server.Send(&ChatResponse{Message: "Hello"})
+
+    return server.Process(ctx)
+}
+
+// На клиенте
+func (c *Client) Chat(ctx context.Context, callback func(ctx context.Context, *ChatResponse) error) error {
+    stream, err := c.client.Chat(ctx)
+    if err != nil {
+        return err
+    }
+
+    client := stream.NewClientBidiStreamingServer[ChatRequest, ChatResponse](
+        stream,
+        callback,
+        logger,
+        10,
+    )
+
+    // Отправка сообщений
+    client.Send(&ChatRequest{Message: "Hello"})
+
+    return client.Process(ctx)
+}
+```
+
+## Зависимости
+
+* [Compogo](https://github.com/Compogo/compogo) — основной фреймворк
+* [Compogo Runner](https://github.com/Compogo/runner) — управление процессами
+* [google.golang.org/grpc](https://github.com/grpc/grpc-go) — GRPC библиотека
+
+## Лицензия
+
+```text
+MIT License
+
+Copyright (c) 2026 Compogo
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ```

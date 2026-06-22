@@ -1,20 +1,35 @@
-package grpc
+package grpc_server
 
 import (
 	"time"
 
-	"github.com/Compogo/compogo/configurator"
+	"github.com/Compogo/compogo"
 )
 
 const (
+	// MaxConcurrentStreamsFieldName максимальное количество одновременных стримов
 	MaxConcurrentStreamsFieldName = "server.grpc.max_concurrent_streams"
-	MinTimeFieldName              = "server.grpc.min_time"
-	PermitWithoutStreamFieldName  = "server.grpc.permit_without_stream"
-	KeepaliveTimeFieldName        = "server.grpc.keepalive.time"
-	KeepaliveTimeoutFieldName     = "server.grpc.keepalive.timeout"
-	InterfaceFieldName            = "server.grpc.interface"
-	PortFieldName                 = "server.grpc.port"
 
+	// MinTimeFieldName минимальное время между keepalive пингами
+	MinTimeFieldName = "server.grpc.min_time"
+
+	// PermitWithoutStreamFieldName разрешать keepalive без активных стримов
+	PermitWithoutStreamFieldName = "server.grpc.permit_without_stream"
+
+	// KeepaliveTimeFieldName интервал keepalive пингов
+	KeepaliveTimeFieldName = "server.grpc.keepalive.time"
+
+	// KeepaliveTimeoutFieldName таймаут keepalive
+	KeepaliveTimeoutFieldName = "server.grpc.keepalive.timeout"
+
+	// InterfaceFieldName сетевой интерфейс
+	InterfaceFieldName = "server.grpc.interface"
+
+	// PortFieldName порт
+	PortFieldName = "server.grpc.port"
+)
+
+var (
 	MaxConcurrentStreamsDefault = uint32(1000)
 	MinTimeDefault              = time.Second
 	PermitWithoutStreamDefault  = true
@@ -24,6 +39,7 @@ const (
 	PortDefault                 = uint16(9090)
 )
 
+// Config содержит конфигурацию GRPC-сервера.
 type Config struct {
 	PermitWithoutStream  bool
 	Port                 uint16
@@ -34,14 +50,13 @@ type Config struct {
 	KeepaliveTimeout     time.Duration
 }
 
+// NewConfig создаёт новую конфигурацию.
 func NewConfig() *Config {
 	return &Config{}
 }
 
-// Configuration applies configuration values to the Config struct.
-// It reads from the provided configurator and sets defaults if values are not present.
-// This function is designed to be used with container.Invoke in the Configuration phase.
-func Configuration(config *Config, configurator configurator.Configurator) *Config {
+// Configuration загружает конфигурацию из Configurator.
+func Configuration(config *Config, configurator compogo.Configurator) *Config {
 	if config.Interface == "" || config.Interface == InterfaceDefault {
 		configurator.SetDefault(InterfaceFieldName, InterfaceDefault)
 		config.Interface = configurator.GetString(InterfaceFieldName)
